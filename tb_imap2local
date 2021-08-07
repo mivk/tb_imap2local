@@ -1,0 +1,88 @@
+#!/bin/bash
+
+# Copy Thunderbird emails from local IMAP cache to "Local Folders"
+
+# TODO:
+# - folder name encoding
+# - check for rare but possible ">From " lines and also escape these?
+
+ver=0.1
+me=$(basename "$0")
+
+
+ImapRoot="$1"
+DestRoot="$2"
+
+if [ -z "$2" ]; then
+	echo "Usage: $me Source_Folder Destination_Folder"
+	echo "Example:"
+	echo "        $me $HOME/.thunderbird/xxxxxxxx.default/ImapMail/mail.example.com $HOME/.thunderbird/xxxxxxxx.default/Mail/Local Folders/my_old_mails"
+	exit 1
+fi
+
+
+# Make sure Thunderbird is not running!
+if ps ax | grep [Tt]hunderbird; then
+	echo "Close Thunderbird and retry. Aborting."
+	exit 1
+fi
+
+# Remove trailing "/", and add ".sbd"
+DestRoot="${DestRoot%%/}"
+BaseName=$(basename "$DestRoot")
+BaseDir=$(dirname "$DestRoot")
+echo "Basename = $BaseName"
+echo "BaseDir = $BaseDir"
+[[ "$DestRoot" =~ \.sbd$ ]] || DestRoot="$DestRoot.sbd"
+echo "DestRoot = $DestRoot"
+
+
+[ -d "$DestRoot" ] || mkdir -v -p "$DestRoot"
+touch "$BaseDir/$BaseName"
+
+rsync -va --stats "$ImapRoot"/ "$DestRoot"/
+
+
+# Fix "From " lines in message bodies where needed
+
+echo "Fixing 'From ' lines in message bodies where needed"
+cd "$DestRoot"
+
+declare -a tofix
+
+while read f; do
+	grep -q -m 1 -P '^From (?!- )' "$f" || continue
+	tofix+=("$f")
+done < <(find "$DestRoot" -type f -not -name "*.msf")
+
+for f in "${tofix[@]}"; do
+	echo "$f"
+	perl -i.bak -pe 'next unless /^From /; next if /^From - ([A-Z][a-z]{2} ){2}[ \d]{2} /; s/^From />From /; warn "$_"' "$f"
+	#better? test it! : perl -i.bak -pe 'next unless /^>*From /; next if /^From - ([A-Z][a-z]{2} ){2}[ \d]{2} /; s/^(>*From) />$1 /; warn "$_"' "$f"
+	echo
+done
+
+
+# Add empty mbox for folders if it is missing
+echo "Adding empty mbox for folders if it is missing"
+find "$DestRoot" -type d -name "*.sbd" \
+| while read sbd; do
+	mbox="${sbd%%.sbd}"
+	if [ ! -e "$mbox" ]; then
+		echo "Adding missing $mbox"
+		touch "$mbox"
+	fi
+done
+
+echo ""
+echo "DONE."
+echo ""
+echo "You need to remove backup files before starting Thunderbird:"
+echo "  find '$DestRoot' -type f -name '*.bak'     -delete"
+echo "  find '$DestRoot' -type f -name '*.bak.msf' -delete"
+echo ""
+
+# Fix encoding
+#find "$DestRoot" -depth -name '*&*' | while read x; do new=$(perl -CSA -MEncode::IMAPUTF7 -le 'print Encode::IMAPUTF7::decode("IMAP-UTF-7", shift)' "$x") && mv -v "$x" "$new"; done
+echo "If you have many accented mailbox names, install perl's Encode::IMAPUTF7 module and run:"
+echo "find \"$DestRoot\" -depth -name '*&*' | while read x; do new=\$(perl -CSA -MEncode::IMAPUTF7 -le 'print Encode::IMAPUTF7::decode(\"IMAP-UTF-7\", shift)' \"$x\") && mv -v \"$x\" \"$new\"; done"
